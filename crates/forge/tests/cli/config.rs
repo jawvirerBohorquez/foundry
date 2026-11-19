@@ -1304,6 +1304,42 @@ shared/=deps-a/a/lib/shared/src/
     cmd.forge_fuse().arg("remappings").assert_success().stdout_eq(expected);
 }
 
+// A dependency's undeclared nested copy of a package the root installs directly must not get
+// its own target, or values passed between the root and the dependency change type.
+#[forgetest]
+fn direct_dependency_remapping_is_not_scoped_for_nested_copies(prj: _, cmd: _) {
+    let a = prj.root().join("lib/a");
+    let shared = prj.root().join("lib/shared/src");
+    let nested_shared = a.join("lib/shared/src");
+    for dir in [&a.join("src"), &shared, &nested_shared] {
+        pretty_err(dir, fs::create_dir_all(dir));
+    }
+    pretty_err(&shared, fs::write(shared.join("Types.sol"), "struct S { uint256 x; }\n"));
+    pretty_err(
+        &nested_shared,
+        fs::write(nested_shared.join("Types.sol"), "struct S { uint256 x; uint256 y; }\n"),
+    );
+    pretty_err(
+        &a,
+        fs::write(
+            a.join("src/A.sol"),
+            "import {S} from \"shared/Types.sol\"; library A { function f(S memory s) internal pure returns (uint256) { return s.x; } }\n",
+        ),
+    );
+    prj.add_source(
+        "UsesShared.sol",
+        "import {S} from \"shared/Types.sol\"; import {A} from \"a/A.sol\"; contract UsesShared { function g(S memory s) external pure returns (uint256) { return A.f(s); } }\n",
+    );
+
+    cmd.arg("remappings").assert_success().stdout_eq(str![[r#"
+a/=lib/a/src/
+shared/=lib/shared/src/
+
+"#]]);
+    cmd.forge_fuse().arg("build").assert_success();
+    cmd.forge_fuse().arg("lint").assert_success();
+}
+
 #[forgetest]
 fn scoped_npm_context_preserves_hoisted_sibling_fallback(prj: _, cmd: _) {
     let owner = prj.root().join("node_modules/@bananapus/router-terminal-v6");

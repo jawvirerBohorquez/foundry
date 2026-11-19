@@ -348,6 +348,17 @@ impl RemappingsProvider<'_> {
                 .into_iter()
                 .filter_map(|(name, targets)| (targets.len() > 1).then_some(name))
                 .collect::<BTreeSet<_>>();
+            // Aliases whose global target is a package the root installs directly.
+            let direct_aliases = global
+                .iter()
+                .filter(|remapping| {
+                    !contextual.iter().any(|nested| {
+                        nested.name == remapping.name
+                            && Path::new(&nested.path) == Path::new(&remapping.path)
+                    })
+                })
+                .map(|remapping| remapping.name.clone())
+                .collect::<BTreeSet<_>>();
             let mut lib_remappings = BTreeMap::new();
             let mut explicit_contextual_remappings = Vec::new();
             let mut unscoped_contextual_remappings = BTreeSet::new();
@@ -487,7 +498,11 @@ impl RemappingsProvider<'_> {
             }
             for remapping in contextual
                 .into_iter()
-                .filter(|remapping| ambiguous_aliases.contains(&remapping.name))
+                .filter(|remapping| {
+                    ambiguous_aliases.contains(&remapping.name)
+                        && (!direct_aliases.contains(&remapping.name)
+                            || installed_under_node_modules(remapping))
+                })
                 .flat_map(expand_scoped_contextual_remapping)
             {
                 if let Some(overlays) = contextual_overlays(&authoritative_remappings, &remapping) {
@@ -929,6 +944,23 @@ fn normalize_remapping_context(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+/// Returns whether a nested remapping targets a copy its owner installs under `node_modules`.
+///
+/// A package manager nests a copy there only when the owner requires a version the root does not
+/// provide, so that copy keeps its own target even when the root installs the package directly. A
+/// nested copy elsewhere, such as a recursively checked out submodule, follows the root's direct
+/// installation instead, so values passed between the root and its owner keep one type.
+fn installed_under_node_modules(remapping: &Remapping) -> bool {
+    let path = Path::new(&remapping.path);
+    remapping
+        .context
+        .as_deref()
+        .and_then(|context| path.strip_prefix(context).ok())
+        .unwrap_or(path)
+        .components()
+        .any(|component| component.as_os_str() == "node_modules")
 }
 
 /// Sorts by descending context depth, then by context, preserving order within each context.

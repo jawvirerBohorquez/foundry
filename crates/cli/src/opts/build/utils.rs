@@ -2,8 +2,9 @@ use eyre::Result;
 use foundry_common::fs::canonicalize_path;
 use foundry_compilers::{
     CompilerInput, Graph, Project, ProjectCompileOutput, ProjectPathsConfig,
-    artifacts::{Source, Sources},
+    artifacts::{Source, Sources, remappings::Remapping},
     multi::{MultiCompilerLanguage, MultiCompilerParser},
+    resolver::ResolvedSources,
     solc::{SOLC_EXTENSIONS, SolcLanguage, SolcVersionedInput},
 };
 use foundry_config::Config;
@@ -98,10 +99,9 @@ fn configure_pcx_with_sources(
 
     // Process Solar-compatible sources and use the latest version for the compiler input.
     let graph = Graph::<MultiCompilerParser>::resolve_sources(&project.paths, sources)?;
-    let Some(versioned_sources) = graph
-        // Resolve graph into mapping language -> version -> sources
-        .into_sources_by_version(project)?
-        .sources
+    // Resolve graph into mapping language -> version -> sources
+    let ResolvedSources { sources, edges, .. } = graph.into_sources_by_version(project)?;
+    let Some(versioned_sources) = sources
         .into_iter()
         // Only interested in Solidity sources
         .find(|(lang, _)| *lang == MultiCompilerLanguage::Solc(SolcLanguage::Solidity))
@@ -138,12 +138,13 @@ fn configure_pcx_with_sources(
         sh_warn!("no files found. Solar doesn't support Solidity versions prior to 0.8.0")?;
     }
 
-    let solc = SolcVersionedInput::build(
+    let mut solc = SolcVersionedInput::build(
         sources,
         config.solc_settings()?,
         SolcLanguage::Solidity,
         version,
     );
+    solc.input.settings.remappings.extend(edges.remappings().iter().cloned());
 
     configure_pcx_from_solc(pcx, &project.paths, &solc, true);
 
@@ -224,12 +225,13 @@ pub fn get_solar_sources_from_compile_output(
         (max_version, sources)
     };
 
-    let solc = SolcVersionedInput::build(
+    let mut solc = SolcVersionedInput::build(
         sources,
         config.solc_settings()?,
         SolcLanguage::Solidity,
         version,
     );
+    solc.input.settings.remappings.extend(output.graph().remappings().iter().cloned());
 
     Ok(solc)
 }
@@ -263,7 +265,7 @@ fn solar_slash_path(path: &Path) -> String {
 
 /// Configures a [`ParsingContext`] from [`ProjectPathsConfig`] and [`SolcVersionedInput`].
 ///
-/// - Configures include paths, remappings.
+/// - Configures include paths, project remappings, and the input's remappings.
 /// - Source files are added if `add_source_file` is set
 pub fn configure_pcx_from_solc(
     pcx: &mut ParsingContext<'_>,
@@ -271,7 +273,12 @@ pub fn configure_pcx_from_solc(
     vinput: &SolcVersionedInput,
     add_source_files: bool,
 ) {
-    configure_pcx_from_solc_cli(pcx, project_paths, &vinput.cli_settings);
+    configure_pcx_from_solc_cli(
+        pcx,
+        project_paths,
+        &vinput.input.settings.remappings,
+        &vinput.cli_settings,
+    );
     if add_source_files {
         let sources = vinput
             .input
@@ -292,6 +299,7 @@ pub fn configure_pcx_from_solc(
 fn configure_pcx_from_solc_cli(
     pcx: &mut ParsingContext<'_>,
     project_paths: &ProjectPathsConfig,
+    input_remappings: &[Remapping],
     cli_settings: &foundry_compilers::solc::CliSettings,
 ) {
     // Solc selects and validates the project version; Solar is used only for analysis.
@@ -299,7 +307,7 @@ fn configure_pcx_from_solc_cli(
     let base_path = cli_settings.base_path.as_ref().unwrap_or(&project_paths.root);
     pcx.file_resolver.set_base_path(base_path);
     pcx.file_resolver.set_current_dir(base_path);
-    for remapping in &project_paths.remappings {
+    for remapping in project_paths.remappings.iter().chain(input_remappings) {
         let context = remapping.context.clone().unwrap_or_default();
         // Solar compares the context directly with the parent source path. Match the slash form
         // used above instead of allowing mixed Windows separators to change prefix semantics.

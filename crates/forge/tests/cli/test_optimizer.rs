@@ -6,6 +6,7 @@ use foundry_compilers::artifacts::{
     ConfigurableContractArtifact, EvmVersion, remappings::Remapping,
 };
 use foundry_config::{CompilationRestrictions, SettingsOverrides};
+use foundry_test_utils::util::OutputExt;
 use std::fs;
 
 #[cfg(unix)]
@@ -890,7 +891,11 @@ contract NestedTest { function test_nested() public { new Base(); } }
 "#,
     );
 
-    cmd.args(["test"]).assert_success();
+    // Analysis must follow the nested library's absolute import instead of falling back.
+    cmd.env("RUST_LOG", "warn");
+    let output = cmd.args(["test"]).assert_success().get_output().clone();
+    let logs = format!("{}{}", output.stdout_lossy(), output.stderr_lossy());
+    assert!(!logs.contains("dynamic test linking analysis failed"), "{logs}");
 }
 
 #[forgetest]

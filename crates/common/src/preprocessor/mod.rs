@@ -66,7 +66,7 @@ impl DynamicTestLinkingPreprocessor {
 
 impl Preprocessor<SolcCompiler> for DynamicTestLinkingPreprocessor {
     fn cache_version(&self) -> u64 {
-        14
+        15
     }
 
     fn preprocess(
@@ -127,6 +127,25 @@ impl Preprocessor<SolcCompiler> for DynamicTestLinkingPreprocessor {
         let mut updates = Updates::default();
         let mut parser_paths = paths.clone();
         parser_paths.include_paths.extend(input.cli_settings.include_paths.iter().cloned());
+        // The input also carries the remappings of absolute imports inside nested libraries. Add
+        // those, with their root-relative targets made absolute like the project's remappings.
+        parser_paths.remappings.extend(
+            input
+                .input
+                .settings
+                .remappings
+                .iter()
+                .filter(|remapping| {
+                    !paths.remappings.iter().any(|project| {
+                        project.context == remapping.context && project.name == remapping.name
+                    })
+                })
+                .map(|remapping| {
+                    let mut remapping = remapping.clone();
+                    remapping.path = paths.root.join(&remapping.path).display().to_string();
+                    remapping
+                }),
+        );
         let mut compiler =
             foundry_compilers::resolver::parse::SolParser::new(parser_paths.with_language_ref())
                 .into_compiler();
