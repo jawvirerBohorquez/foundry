@@ -896,6 +896,8 @@ contract NestedTest { function test_nested() public { new Base(); } }
     let output = cmd.args(["test"]).assert_success().get_output().clone();
     let logs = format!("{}{}", output.stdout_lossy(), output.stderr_lossy());
     assert!(!logs.contains("dynamic test linking analysis failed"), "{logs}");
+    // Lint parses the same sources with Solar.
+    cmd.forge_fuse().arg("lint").assert_success();
 }
 
 #[forgetest]
